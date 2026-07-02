@@ -356,6 +356,9 @@ int real_main(int argc, char* argv[]) {
                           have_checksum_reference, checksum_reference, result_rows);
     }
 
+    std::stable_sort(result_rows.begin(), result_rows.end(),
+                     [](const ResultRow& left, const ResultRow& right) { return left.n < right.n; });
+
     std::cout << "n,order,runs,total_ns,avg_ns,checksum,status\n";
     for (const ResultRow& row : result_rows) {
         std::cout << row.n << ',' << row.order << ",1," << row.elapsed_ns << ',' << row.elapsed_ns << ','
