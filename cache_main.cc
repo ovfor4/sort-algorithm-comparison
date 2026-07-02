@@ -7,12 +7,11 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 using Matrix = std::vector<int>;
@@ -30,9 +29,15 @@ struct Dataset {
     Matrix b;
 };
 
-struct Stats {
-    std::uint64_t runs = 0;
-    std::uint64_t total_ns = 0;
+struct WorkItem {
+    std::size_t dataset_index = 0;
+    std::string order;
+};
+
+struct ResultRow {
+    std::size_t n = 0;
+    std::string order;
+    std::uint64_t elapsed_ns = 0;
     std::uint64_t checksum = 0;
 };
 
@@ -40,6 +45,7 @@ struct Options {
     std::string input_path;
     bool verify = false;
     std::size_t verify_max_n = 64;
+    std::uint32_t execution_seed = 123456789u;
 };
 
 void run_ijk(std::size_t n, const Matrix& a, const Matrix& b, ResultMatrix& c) {
@@ -217,7 +223,8 @@ std::uint64_t checksum_result(const ResultMatrix& data) {
 }
 
 void print_usage(const char* program) {
-    std::cerr << "usage: " << program << " <data-file> [--verify] [--verify-max-n N]\n";
+    std::cerr << "usage: " << program << " <data-file> [--verify] [--verify-max-n N]"
+              << " [--execution-seed S]\n";
 }
 
 Options parse_options(int argc, char* argv[]) {
@@ -238,6 +245,12 @@ Options parse_options(int argc, char* argv[]) {
             options.verify = true;
         } else if (arg == "--verify-max-n") {
             options.verify_max_n = parse_size_arg(require_value(arg), arg);
+        } else if (arg == "--execution-seed") {
+            const std::size_t seed = parse_size_arg(require_value(arg), arg);
+            if (seed > std::numeric_limits<std::uint32_t>::max()) {
+                throw std::runtime_error("--execution-seed is too large for uint32_t");
+            }
+            options.execution_seed = static_cast<std::uint32_t>(seed);
         } else if (options.input_path.empty()) {
             options.input_path = arg;
         } else {
@@ -258,55 +271,59 @@ ResultMatrix make_expected(const Dataset& dataset) {
     return expected;
 }
 
-void process_dataset(const Dataset& dataset, const Options& options,
-                     std::map<std::pair<std::size_t, std::string>, Stats>& results,
-                     std::map<std::size_t, bool>& seen_sizes) {
-    seen_sizes[dataset.n] = true;
+std::vector<WorkItem> make_work_items(const std::vector<Dataset>& datasets, const Options& options) {
+    std::vector<WorkItem> work_items;
 
+    for (std::size_t dataset_index = 0; dataset_index < datasets.size(); ++dataset_index) {
+        for (const std::string& order_name : datasets[dataset_index].order) {
+            work_items.push_back({dataset_index, order_name});
+        }
+    }
+
+    std::mt19937 rng(options.execution_seed);
+    std::shuffle(work_items.begin(), work_items.end(), rng);
+    return work_items;
+}
+
+void process_work_item(const Dataset& dataset, std::size_t dataset_index, const std::string& order_name,
+                       const Options& options, std::vector<bool>& have_checksum_reference,
+                       std::vector<std::uint64_t>& checksum_reference, std::vector<ResultRow>& result_rows) {
     ResultMatrix expected;
     const bool verify_full_result = options.verify && dataset.n <= options.verify_max_n;
     if (verify_full_result) {
         expected = make_expected(dataset);
     }
 
-    bool have_checksum_reference = false;
-    std::uint64_t checksum_reference = 0;
-
-    for (const std::string& order_name : dataset.order) {
-        const Kernel* kernel = find_kernel(order_name);
-        if (kernel == nullptr) {
-            throw std::logic_error("validated loop order disappeared");
-        }
-
-        ResultMatrix work(matrix_element_count(dataset.n), 0);
-
-        std::atomic_signal_fence(std::memory_order_seq_cst);
-        const auto start = std::chrono::steady_clock::now();
-        kernel->run(dataset.n, dataset.a, dataset.b, work);
-        std::atomic_signal_fence(std::memory_order_seq_cst);
-        const auto end = std::chrono::steady_clock::now();
-
-        const std::uint64_t checksum = checksum_result(work);
-        if (verify_full_result && work != expected) {
-            throw std::runtime_error(order_name + " produced an incorrect result");
-        }
-        if (options.verify && !verify_full_result) {
-            if (!have_checksum_reference) {
-                have_checksum_reference = true;
-                checksum_reference = checksum;
-            } else if (checksum != checksum_reference) {
-                throw std::runtime_error(order_name + " produced a mismatched checksum");
-            }
-        }
-
-        const auto elapsed_ns = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-
-        Stats& stats = results[{dataset.n, std::string(kernel->name)}];
-        ++stats.runs;
-        stats.total_ns += elapsed_ns;
-        stats.checksum += checksum;
+    const Kernel* kernel = find_kernel(order_name);
+    if (kernel == nullptr) {
+        throw std::logic_error("validated loop order disappeared");
     }
+
+    ResultMatrix work(matrix_element_count(dataset.n), 0);
+
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    const auto start = std::chrono::steady_clock::now();
+    kernel->run(dataset.n, dataset.a, dataset.b, work);
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    const auto end = std::chrono::steady_clock::now();
+
+    const std::uint64_t checksum = checksum_result(work);
+    if (verify_full_result && work != expected) {
+        throw std::runtime_error(order_name + " produced an incorrect result");
+    }
+    if (options.verify && !verify_full_result) {
+        if (!have_checksum_reference[dataset_index]) {
+            have_checksum_reference[dataset_index] = true;
+            checksum_reference[dataset_index] = checksum;
+        } else if (checksum != checksum_reference[dataset_index]) {
+            throw std::runtime_error(order_name + " produced a mismatched checksum");
+        }
+    }
+
+    const auto elapsed_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+
+    result_rows.push_back({dataset.n, std::string(kernel->name), elapsed_ns, checksum});
 }
 
 int real_main(int argc, char* argv[]) {
@@ -317,34 +334,32 @@ int real_main(int argc, char* argv[]) {
         throw std::runtime_error("cannot open input file: " + options.input_path);
     }
 
-    std::map<std::pair<std::size_t, std::string>, Stats> results;
-    std::map<std::size_t, bool> seen_sizes;
+    std::vector<Dataset> datasets;
 
     Dataset dataset;
-    std::size_t dataset_count = 0;
     while (read_dataset(input, dataset)) {
-        process_dataset(dataset, options, results, seen_sizes);
-        ++dataset_count;
+        datasets.push_back(std::move(dataset));
     }
 
-    if (dataset_count == 0) {
+    if (datasets.empty()) {
         throw std::runtime_error("input file contains no datasets");
     }
 
-    std::cout << "n,order,runs,total_ns,avg_ns,checksum,status\n";
-    for (const auto& [n, unused] : seen_sizes) {
-        (void)unused;
-        for (const Kernel& kernel : kKernels) {
-            const auto iter = results.find({n, std::string(kernel.name)});
-            if (iter == results.end()) {
-                std::cout << n << ',' << kernel.name << ",0,0,0,0,skipped\n";
-                continue;
-            }
+    std::vector<WorkItem> work_items = make_work_items(datasets, options);
+    std::vector<bool> have_checksum_reference(datasets.size(), false);
+    std::vector<std::uint64_t> checksum_reference(datasets.size(), 0);
+    std::vector<ResultRow> result_rows;
+    result_rows.reserve(work_items.size());
 
-            const Stats& stats = iter->second;
-            std::cout << n << ',' << kernel.name << ',' << stats.runs << ',' << stats.total_ns << ','
-                      << (stats.total_ns / stats.runs) << ',' << stats.checksum << ",ok\n";
-        }
+    for (const WorkItem& work_item : work_items) {
+        process_work_item(datasets[work_item.dataset_index], work_item.dataset_index, work_item.order, options,
+                          have_checksum_reference, checksum_reference, result_rows);
+    }
+
+    std::cout << "n,order,runs,total_ns,avg_ns,checksum,status\n";
+    for (const ResultRow& row : result_rows) {
+        std::cout << row.n << ',' << row.order << ",1," << row.elapsed_ns << ',' << row.elapsed_ns << ','
+                  << row.checksum << ",ok\n";
     }
 
     return 0;

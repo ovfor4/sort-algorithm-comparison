@@ -1,13 +1,11 @@
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,9 +13,6 @@
 struct Options {
     std::string output_path;
     std::size_t max_n = 1000;
-    std::size_t dense_n_max = 1000;
-    std::size_t log_base = 2;
-    std::size_t log_steps = 8;
     std::uint64_t target_work = 300000000ULL;
     std::size_t k_min = 1;
     std::size_t k_max = 200;
@@ -63,8 +58,7 @@ std::uint64_t parse_u64_arg(const std::string& text, const std::string& name) {
 
 void print_usage(const char* program) {
     std::cerr << "usage: " << program
-              << " --output <file> [--max-n N] [--dense-n-max N] [--log-base B]"
-                 " [--log-steps S] [--target-work W] [--k-min K] [--k-max K]"
+              << " --output <file> [--max-n N] [--target-work W] [--k-min K] [--k-max K]"
                  " [--value-max V] [--seed S]\n";
 }
 
@@ -86,12 +80,6 @@ Options parse_options(int argc, char* argv[]) {
             options.output_path = require_value(arg);
         } else if (arg == "--max-n") {
             options.max_n = parse_size_arg(require_value(arg), arg);
-        } else if (arg == "--dense-n-max") {
-            options.dense_n_max = parse_size_arg(require_value(arg), arg);
-        } else if (arg == "--log-base") {
-            options.log_base = parse_size_arg(require_value(arg), arg);
-        } else if (arg == "--log-steps") {
-            options.log_steps = parse_size_arg(require_value(arg), arg);
         } else if (arg == "--target-work") {
             options.target_work = parse_u64_arg(require_value(arg), arg);
         } else if (arg == "--k-min") {
@@ -117,12 +105,6 @@ Options parse_options(int argc, char* argv[]) {
     if (options.max_n < 2) {
         throw std::runtime_error("--max-n must be at least 2");
     }
-    if (options.log_base < 2) {
-        throw std::runtime_error("--log-base must be at least 2");
-    }
-    if (options.log_steps == 0) {
-        throw std::runtime_error("--log-steps must be positive");
-    }
     if (options.target_work == 0) {
         throw std::runtime_error("--target-work must be positive");
     }
@@ -140,28 +122,14 @@ Options parse_options(int argc, char* argv[]) {
 }
 
 std::vector<std::size_t> make_n_values(const Options& options) {
-    std::set<std::size_t> values;
-    const std::size_t dense_end = std::min(options.dense_n_max, options.max_n);
+    std::vector<std::size_t> values;
+    values.reserve(options.max_n - 1);
 
-    for (std::size_t n = 2; n <= dense_end; ++n) {
-        values.insert(n);
+    for (std::size_t n = 2; n <= options.max_n; ++n) {
+        values.push_back(n);
     }
 
-    for (std::size_t step = 0;; ++step) {
-        const long double exponent = static_cast<long double>(step) / static_cast<long double>(options.log_steps);
-        const long double raw_n = std::pow(static_cast<long double>(options.log_base), exponent);
-
-        if (raw_n > static_cast<long double>(options.max_n) + 0.5L) {
-            break;
-        }
-
-        const auto n = static_cast<std::size_t>(std::llround(raw_n));
-        if (n > options.dense_n_max && n >= 2 && n <= options.max_n) {
-            values.insert(n);
-        }
-    }
-
-    return {values.begin(), values.end()};
+    return values;
 }
 
 std::size_t rounds_for_n(std::size_t n, const Options& options) {
