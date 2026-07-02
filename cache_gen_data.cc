@@ -12,6 +12,7 @@
 
 struct Options {
     std::string output_path;
+    std::size_t start_n = 2;
     std::size_t max_n = 1000;
     std::uint64_t target_work = 300000000ULL;
     std::size_t k_min = 1;
@@ -58,7 +59,7 @@ std::uint64_t parse_u64_arg(const std::string& text, const std::string& name) {
 
 void print_usage(const char* program) {
     std::cerr << "usage: " << program
-              << " --output <file> [--max-n N] [--target-work W] [--k-min K] [--k-max K]"
+              << " --output <file> [--start-n N] [--max-n N] [--target-work W] [--k-min K] [--k-max K]"
                  " [--value-max V] [--seed S]\n";
 }
 
@@ -78,6 +79,8 @@ Options parse_options(int argc, char* argv[]) {
 
         if (arg == "--output") {
             options.output_path = require_value(arg);
+        } else if (arg == "--start-n") {
+            options.start_n = parse_size_arg(require_value(arg), arg);
         } else if (arg == "--max-n") {
             options.max_n = parse_size_arg(require_value(arg), arg);
         } else if (arg == "--target-work") {
@@ -105,6 +108,12 @@ Options parse_options(int argc, char* argv[]) {
     if (options.max_n < 2) {
         throw std::runtime_error("--max-n must be at least 2");
     }
+    if (options.start_n < 2) {
+        throw std::runtime_error("--start-n must be at least 2");
+    }
+    if (options.max_n < options.start_n) {
+        throw std::runtime_error("--max-n must be at least --start-n");
+    }
     if (options.target_work == 0) {
         throw std::runtime_error("--target-work must be positive");
     }
@@ -123,9 +132,9 @@ Options parse_options(int argc, char* argv[]) {
 
 std::vector<std::size_t> make_n_values(const Options& options) {
     std::vector<std::size_t> values;
-    values.reserve(options.max_n - 1);
+    values.reserve(options.max_n - options.start_n + 1);
 
-    for (std::size_t n = 2; n <= options.max_n; ++n) {
+    for (std::size_t n = options.start_n; n <= options.max_n; ++n) {
         values.push_back(n);
     }
 

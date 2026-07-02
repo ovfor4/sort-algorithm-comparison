@@ -18,7 +18,7 @@ matrix:
 g++ -std=c++23 -O3 -Wall -Wextra -pedantic cache_gen_data.cc -o build/cache_gen_data
 g++ -std=c++23 -O3 -Wall -Wextra -pedantic cache_main.cc -o build/cache_benchmark
 
-build/cache_gen_data --output cache_data.txt.local --max-n 256 --target-work 100000000 --k-min 10 --k-max 100
+build/cache_gen_data --output cache_data.txt.local --start-n 2 --max-n 256 --target-work 100000000 --k-min 10 --k-max 100
 build/cache_benchmark cache_data.txt.local --verify
 ```
 output:
